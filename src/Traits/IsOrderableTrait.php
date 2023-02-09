@@ -1,6 +1,6 @@
 <?php
 
-namespace Jaulz\Limax\Traits;
+namespace Jaulz\Podium\Traits;
 
 use Illuminate\Database\Eloquent\Builder;
 
