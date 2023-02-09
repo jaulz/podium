@@ -30,6 +30,7 @@ class PodiumServiceProvider extends PackageServiceProvider
             ->name('podium')
             ->hasConfigFile('podium')
             ->hasMigration('create_podium_extension')
+            ->hasMigration('grant_usage_on_podium_extension')
             ->hasInstallCommand(function(InstallCommand $command) {
                 $command
                     ->publishMigrations()
