@@ -1,0 +1,786 @@
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Support\Facades\DB;
+use Tpetry\PostgresqlEnhanced\Schema\Blueprint;
+use Tpetry\PostgresqlEnhanced\Support\Facades\Schema;
+use Jaulz\Podium\Podium;
+
+return new class extends Migration {
+  /**
+   * Run the migrations.
+   *
+   * @return void
+   */
+  public function up()
+  {
+    DB::transaction(function () {
+      DB::statement('CREATE SCHEMA IF NOT EXISTS ' . Podium::$schema);
+
+      // Create artifacts 
+      $this->createTypes();
+      $this->createUtilityFunctions();
+      $this->createFunctions();
+      $this->createTables();
+      $this->createTriggerFunctions();
+      $this->createTriggers();
+    });
+  }
+
+  /**
+   * Reverse the migrations.
+   *
+   * @return void
+   */
+  public function down()
+  {
+    DB::statement('DROP SCHEMA IF EXISTS ' . Podium::$schema . ' CASCADE;');
+  }
+
+  protected function createTypes() {
+      Schema::createDomain(Podium::$schema . '.column_names', 'text[]');
+  }
+
+  protected function createUtilityFunctions() {
+      Schema::createFunctionOrReplace(
+        name: Podium::$schema . '.get_record_value',
+        parameters: [
+          'p_element' => 'anyelement',
+          'p_key' => 'text',
+        ],
+        return: 'text',
+        body: sprintf(
+          <<<PLPGSQL
+BEGIN
+  RETURN row_to_json(p_element) ->> p_key;
+END;
+PLPGSQL
+        ),
+        language: 'PLPGSQL'
+      );
+
+      Schema::createFunctionOrReplace(
+        name: Podium::$schema . '.array_reverse',
+        parameters: [
+          'p_array' => 'anyarray',
+        ],
+        return: 'anyarray',
+        body: sprintf(
+          <<<SQL
+  SELECT ARRAY(
+    SELECT p_array[i]
+    FROM generate_subscripts(p_array, 1) AS s(i)
+    ORDER BY i DESC
+  );
+SQL
+        ),
+        language: 'SQL',
+        options: [
+          'volatility' => 'immutable',
+        ]
+      );
+
+      Schema::createFunctionOrReplace(
+        name: Podium::$schema . '.get_primary_key_name',
+        parameters: [
+          'p_table_schema' => 'text',
+          'p_table_name' => 'text',
+        ],
+        return: 'text',
+        body: sprintf(
+          <<<PLPGSQL
+  DECLARE
+    primary_key_name text;
+  BEGIN
+    EXECUTE format(
+        '
+          SELECT c.column_name
+            FROM information_schema.table_constraints tc 
+            JOIN information_schema.constraint_column_usage AS ccu 
+              USING (constraint_schema, constraint_name) 
+            JOIN information_schema.columns AS c 
+              ON 
+                  c.table_schema = tc.constraint_schema
+                AND 
+                  tc.table_name = c.table_name 
+                AND 
+                  ccu.column_name = c.column_name
+            WHERE 
+                constraint_type = ''PRIMARY KEY''
+              AND 
+                tc.table_schema = %%L
+              AND 
+                tc.table_name = %%L
+        ',
+        p_table_schema,
+        p_table_name
+      ) 
+      INTO primary_key_name;
+
+    RETURN primary_key_name;
+  END;
+PLPGSQL
+        ),
+        language: 'PLPGSQL'
+      );
+  }
+
+  protected function createFunctions() {
+      Schema::createFunctionOrReplace(
+        name: Podium::$schema . '.lexo_rank',
+        parameters: [
+          'p_previous' => 'TEXT DEFAULT NULL',
+          'p_next' => 'TEXT DEFAULT NULL',
+        ],
+        language: 'plpgsql',
+        return: 'TEXT',
+        body: <<<PLPGSQL
+  DECLARE
+    temp text;
+    previous_ascii int;
+    next_ascii int;
+    position int := 0;
+    between text;
+    min_ascii int := 97; -- a -- 48; -- 0
+    max_ascii int := 122; -- z
+    lower_bound int;
+    upper_bound int;
+  BEGIN
+    -- Ensure valid values
+    p_previous := trim(regexp_replace(coalesce(p_previous, ''), '[^\x' || to_hex(min_ascii) || '-\x' || to_hex(max_ascii) || ']', '', 'g')); 
+    p_next := trim(regexp_replace(coalesce(p_next, ''), '[^\x' || to_hex(min_ascii) || '-\x' || to_hex(max_ascii) || ']', '', 'g')); 
+
+    -- Sort previous and next correctly
+    IF p_previous != '' AND p_next != '' AND p_previous > p_next THEN
+      temp = p_next;
+      p_next = p_previous;
+      p_previous = temp;
+    END IF;
+
+    -- Handle special cases
+    IF p_previous = '' AND p_next = '' THEN
+      p_previous = chr(min_ascii);
+      p_next = chr(max_ascii);
+    END IF;
+    
+    -- Define bounds
+    lower_bound := min_ascii - 1;
+    upper_bound := max_ascii + 1;
+
+    -- Find leftmost non-matching character
+    LOOP 
+      previous_ascii := CASE WHEN position < char_length(p_previous) THEN 
+          ascii(substring(p_previous from position + 1)) 
+        ELSE 
+          lower_bound
+        END;
+      next_ascii := CASE WHEN position < char_length(p_next) THEN 
+          ascii(substring(p_next from position + 1)) 
+        ELSE 
+          upper_bound
+        END;
+
+      position := position + 1;
+
+      EXIT WHEN NOT (previous_ascii = next_ascii);
+    END LOOP;
+
+    -- Copy identical part of string
+    between := left(p_previous, position - 1);
+
+    -- Previous string equals beginning of next
+    IF previous_ascii = lower_bound THEN                
+      -- Next character is 'a'
+      WHILE next_ascii = lower_bound + 1 LOOP
+        -- Get character from next
+        next_ascii = CASE WHEN position < char_length(p_next) THEN 
+            ascii(substring(p_next from position + 1)) 
+          ELSE 
+            upper_bound 
+          END;
+
+        -- Insert an 'a' to match the 'a'
+        between := between || chr(min_ascii);      
+        position := position + 1;
+      END LOOP;
+
+      -- Next character is 'b'
+      IF next_ascii = min_ascii + 1 THEN           
+        -- Insert an 'a' to match the 'b' 
+        between := between || chr(min_ascii); 
+
+        -- Set to end of alphabet
+        next_ascii := upper_bound;
+      END IF;
+
+    -- Found consecutive characters
+    ELSIF (previous_ascii + 1) = next_ascii THEN
+      -- Insert character from previous
+      between := between || chr(previous_ascii);
+
+      -- Set to end of alphabet
+      next_ascii = upper_bound; 
+      previous_ascii := CASE WHEN position < char_length(p_previous) THEN 
+          ascii(substring(p_previous from position + 1)) 
+        ELSE 
+          lower_bound
+        END;
+
+      WHILE previous_ascii = max_ascii LOOP
+        position := position + 1;
+        between := between || chr(max_ascii);    
+        
+        -- Insert 'z' to match 'z'
+        previous_ascii := CASE WHEN position < char_length(p_previous) THEN 
+            ascii(substring(p_previous from position + 1)) 
+          ELSE 
+            lower_bound 
+          END;
+      END LOOP;
+    END IF;
+
+    -- Handle special cases
+    IF p_previous = '' THEN
+      IF previous_ascii - 1 = lower_bound THEN
+        return between || chr(min_ascii) || chr(ceil((lower_bound + upper_bound) / 2.0)::int);
+      ELSE
+        return between || chr(next_ascii - 1);
+      END IF;
+    END IF;
+    IF p_next = '' THEN
+      IF previous_ascii + 1 = upper_bound THEN
+        return between || chr(max_ascii) || chr(ceil((lower_bound + upper_bound) / 2.0)::int);
+      ELSE
+        return between || chr(previous_ascii + 1);
+      END IF;
+    END IF;
+    
+    return between || chr(ceil((previous_ascii + next_ascii) / 2.0)::int);
+  END;
+PLPGSQL
+        ,
+        options: [
+          'volatility' => 'immutable',
+          'parallel' => 'safe',
+        ]
+      );
+
+      Schema::createFunctionOrReplace(
+        name: Podium::$schema . '.determine_rank',
+        parameters: [
+          'p_table_schema' => 'text',
+          'p_table_name' => 'text',
+          'p_target_name' => 'text',
+          'p_conditions' => 'text[] DEFAULT \'{}\'::text[]',
+          'p_bucket' => 'integer DEFAULT 0',
+          'p_neighbour' => 'text DEFAULT \'\'',
+          'p_id' => 'text DEFAULT \'\'',
+        ],
+        return: 'text',
+        body: sprintf(
+          <<<PLPGSQL
+  DECLARE
+    last text := NULL;
+    previous text := NULL;
+    next text := NULL;
+    rank text;
+    column_name text;
+    neighbours text[];
+    query text;
+  BEGIN
+    -- Log
+    RAISE DEBUG '%1\$s.determine_rank: definition (p_table_schema=%%, p_table_name=%%, p_target_name=%%, p_conditions=%%, p_bucket=%%, p_neighbour=%%)', 
+      p_table_schema, 
+      p_table_name, 
+      p_target_name, 
+      p_conditions, 
+      p_bucket,
+      p_neighbour;
+
+    -- Prepare condition
+    IF cardinality(p_conditions) = 0 THEN
+      p_conditions = array_append(p_conditions, '1 = 1');
+    END IF;
+  
+    -- Find neighbours
+    query = format('
+        SELECT 
+          %1\$s.array_reverse(
+            array(
+              SELECT 
+                  %%I
+                FROM 
+                  %%I.%%I 
+                WHERE 
+                    %%I SIMILAR TO ''%%s\|[a-z]*''
+                  AND
+                    (%%s)
+                ORDER BY %%I %%s
+                LIMIT %%s
+            )
+          )
+      ', 
+      p_target_name,
+      p_table_schema, 
+      p_table_name,
+      p_target_name,
+      p_bucket,
+      array_to_string(
+        CASE WHEN p_neighbour = 'first' OR p_neighbour = 'last' THEN 
+            p_conditions
+          ELSE
+            array_append(
+              p_conditions, 
+              format(
+                '%%I %%s %%L', 
+                p_target_name, 
+                '<=',
+                p_neighbour
+              )
+            )
+          END,
+        ' AND '
+      ),
+      p_target_name,
+      CASE 
+        WHEN p_neighbour = 'first' THEN 
+          'ASC'
+        WHEN p_neighbour = 'last' THEN
+          'DESC'
+        ELSE
+          'DESC'
+        END,
+      CASE WHEN p_neighbour = 'first' OR p_neighbour = 'last' THEN 
+          1 
+        ELSE 
+          2 
+        END
+    );
+    EXECUTE query INTO neighbours;
+    
+    -- In case the passed neighbour does not exist in the result, it means that a rank was passed which doesn't exist
+    IF p_neighbour = 'first' OR p_neighbour = 'last' OR (p_neighbour SIMILAR TO '[0-9]\|[a-z]*' AND p_neighbour = ANY(neighbours)) THEN
+      IF p_neighbour = 'first' THEN
+        neighbours = array[NULL, neighbours[1]];
+      ELSIF p_neighbour = 'last' THEN
+        neighbours = array[neighbours[1], NULL];
+      END IF;
+
+      IF cardinality(neighbours) = 1 THEN
+        neighbours = array[NULL, neighbours[1]];
+      END IF;
+
+      -- Calculate next rank
+      previous = split_part(coalesce(neighbours[1], ''), '|', 2);
+      next = split_part(coalesce(neighbours[2], ''), '|', 2);
+      rank = p_bucket || '|' || %1\$s.lexo_rank(previous, next);
+
+      IF p_bucket = '1' AND p_id = '5' THEN
+        -- RAISE EXCEPTION '%%, %%, %%, %%, %%, %%, %%', query, neighbours, p_neighbour, previous, next, rank, p_id;
+      END IF;
+    ELSE
+      rank = p_bucket || '|' || %1\$s.lexo_rank(NULL, NULL);
+    END IF;
+  
+    RETURN rank;
+  END;
+PLPGSQL
+          ,
+          Podium::$schema
+        ),
+        language: 'PLPGSQL'
+      );
+
+      Schema::createFunctionOrReplace(
+        name: Podium::$schema . '.create',
+        parameters: [
+          'p_table_schema' => 'text',
+          'p_table_name' => 'text',
+          'p_target_name' => 'text',
+          'p_group_by' => "text[] DEFAULT '{}'::text[]",
+          'p_default_rank' => "text DEFAULT 'last'",
+        ],
+        return: 'void',
+        body: sprintf(
+          <<<PLPGSQL
+  BEGIN
+    INSERT INTO %1\$s.definitions 
+        (table_schema, table_name, target_name, group_by, default_rank) 
+      VALUES 
+        (p_table_schema, p_table_name, p_target_name, p_group_by, p_default_rank);
+  END;
+PLPGSQL
+          ,
+          Podium::$schema
+        ),
+        language: 'PLPGSQL'
+      );
+
+      Schema::createFunctionOrReplace(
+        name: Podium::$schema . '.rebalance',
+        parameters: [
+          'p_table_schema' => 'text',
+          'p_table_name' => 'text',
+          'p_target_name' => 'text',
+          'p_bucket' => 'integer'
+        ],
+        return: 'void',
+        body: sprintf(
+          <<<PLPGSQL
+  BEGIN
+    UPDATE %1\$s.definitions 
+      SET 
+        bucket = p_bucket
+      WHERE
+          table_schema = p_table_schema
+        AND
+          table_name = p_table_name
+        AND 
+          target_name = p_target_name;
+  END;
+PLPGSQL
+          ,
+          Podium::$schema
+        ),
+        language: 'PLPGSQL'
+      );
+  }
+
+  protected function createTables() {
+      Schema::create(Podium::$schema . '.definitions', function (
+        Blueprint $table
+      ) {
+        $table->id()->generatedAs();
+
+        $table->text('table_schema');
+        $table->text('table_name');
+        $table->text('target_name')->default('order');
+        $table->domain('group_by', Podium::$schema . '.column_names')->default(DB::raw(sprintf("'{}'::%1\$s.column_names", Podium::$schema)));
+        $table->text('default_rank')->default('last');
+        $table->integer('bucket')->default(0);
+
+        $table->unique(['table_schema', 'table_name', 'target_name']);
+      });
+  }
+
+  protected function createTriggerFunctions() {
+      Schema::createFunctionOrReplace(
+        name: Podium::$schema . '.definitions__before',
+        parameters: [],
+        return: 'trigger',
+        body: sprintf(
+          <<<PLPGSQL
+  BEGIN
+    -- Prevent updates
+    IF TG_OP = 'UPDATE' THEN
+      NEW.table_schema = OLD.table_schema;
+      NEW.table_name = OLD.table_name;
+      NEW.target_name = OLD.target_name;
+      NEW.group_by = OLD.group_by;
+      NEW.default_rank = OLD.default_rank;
+    END IF;
+
+    RETURN NEW;
+  END;
+PLPGSQL
+          ,
+          Podium::$schema
+        ),
+        language: 'PLPGSQL'
+      );
+
+      Schema::createFunctionOrReplace(
+        name: Podium::$schema . '.definitions__after',
+        parameters: [],
+        return: 'trigger',
+        body: sprintf(
+          <<<PLPGSQL
+DECLARE
+  trigger_name text;
+  index_name text;
+  index_column_names text;
+  primary_key_name text;
+  id int;
+BEGIN
+  -- Log
+  RAISE DEBUG '
+    %1\$s.definition__after: start (
+      TG_NAME=%%, 
+      TG_OP=%%, 
+      TG_TABLE_NAME=%%, 
+      OLD=%%, 
+      NEW=%%, 
+      TG_ARGV=%%
+    )', 
+    TG_NAME, 
+    TG_OP, 
+    TG_TABLE_NAME, 
+    OLD::text, 
+    NEW::text, 
+    TG_ARGV::text;
+
+  -- Determine names
+  id = CASE WHEN TG_OP = 'DELETE' THEN OLD.id ELSE NEW.id END;
+  trigger_name = format('9999_podium_%%s__before', id);
+  index_name = format('%%s_%%s_podium_%%s', NEW.table_name, NEW.target_name, id);
+
+  IF TG_OP = 'DELETE' THEN
+    -- Drop trigger
+    EXECUTE format('
+      DROP TRIGGER IF EXISTS %%I ON %%I.%%I
+    ', trigger_name, OLD.table_schema, OLD.table_name);
+
+    -- Drop column
+    EXECUTE format(
+      'ALTER TABLE %%I.%%I DROP COLUMN IF EXISTS %%I', 
+      OLD.table_schema,
+      OLD.table_name,
+      OLD.target_name
+    );
+
+    RETURN OLD;
+  END IF;
+
+  IF TG_OP = 'INSERT' THEN
+    -- Create column
+    -- Note: the C collation is required to ensure the same ordering here and via SELECTs
+    EXECUTE format(
+      'ALTER TABLE %%I.%%I ADD COLUMN IF NOT EXISTS %%I character varying(255) DEFAULT %%L COLLATE "C"', 
+      NEW.table_schema,
+      NEW.table_name,
+      NEW.target_name,
+      NEW.default_rank
+    );
+
+    -- Create trigger
+    EXECUTE format('DROP TRIGGER IF EXISTS %%I ON %%I.%%I', trigger_name, NEW.table_schema, NEW.table_name);
+    EXECUTE format('
+      CREATE TRIGGER %%I
+        BEFORE INSERT OR UPDATE OR DELETE
+        ON %%I.%%I
+        FOR EACH ROW 
+        EXECUTE FUNCTION %1\$s.podium__before(%%L)
+      ', trigger_name, NEW.table_schema, NEW.table_name, NEW.id);
+
+  -- Alter column to non-nullable
+  -- EXECUTE format(
+  --  'ALTER TABLE %%I.%%I ALTER COLUMN %%I SET NOT NULL', 
+  --   NEW.table_schema,
+  --   NEW.table_name,
+  --   NEW.target_name
+  -- );
+
+  END IF;
+
+  -- Create index
+  IF TG_OP = 'INSERT' THEN
+    SELECT 
+        array_to_string(
+          array_agg(format('%%I', column_name)),
+          ','
+        ) 
+      FROM 
+        unnest(array_append(NEW.group_by, NEW.target_name)) AS column_name
+      INTO index_column_names;
+
+    EXECUTE format('
+      CREATE UNIQUE INDEX IF NOT EXISTS %%I
+        ON %%I.%%I(%%s)
+      ', index_name, NEW.table_schema, NEW.table_name, index_column_names);
+  END IF;   
+
+  -- Fill ranks
+  IF TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND NEW.bucket != OLD.bucket) THEN
+    primary_key_name := %1\$s.get_primary_key_name(NEW.table_schema, NEW.table_name);
+
+    EXECUTE format('
+        UPDATE %%I.%%I t1
+          SET %%I = %%L
+          FROM (
+            SELECT %%I FROM %%I.%%I ORDER BY %%I ASC NULLS LAST FOR UPDATE
+          ) t2
+          WHERE t1.%%I = t2.%%I
+      ', 
+      NEW.table_schema, 
+      NEW.table_name, 
+      NEW.target_name, 
+      NEW.default_rank, 
+      primary_key_name, 
+      NEW.table_schema, 
+      NEW.table_name, 
+      NEW.target_name,
+      primary_key_name,
+      primary_key_name
+    );
+  END IF; 
+
+  RETURN NEW;
+END;
+PLPGSQL
+          ,
+          Podium::$schema
+        ),
+        language: 'PLPGSQL'
+      );
+
+      Schema::createFunctionOrReplace(
+        name: Podium::$schema . '.podium__before',
+        parameters: [],
+        return: 'trigger',
+        body: sprintf(
+          <<<PLPGSQL
+DECLARE
+  definition %1\$s.definitions%%rowtype;
+  p_definition_id int;
+
+  new_rank text;
+  old_rank text;
+  next_rank text;
+  conditions text[] DEFAULT '{}'::text[];
+  column_name text;
+BEGIN
+  -- Cast definition id
+  IF TG_ARGV[0] IS NOT NULL THEN
+    p_definition_id = TG_ARGV[0]::bigint;
+  END IF;
+
+  -- Log
+  RAISE DEBUG '
+    %1\$s.podium__before: start (
+      TG_NAME=%%, 
+      TG_OP=%%, 
+      TG_TABLE_SCHEMA=%%, 
+      TG_TABLE_NAME=%%, 
+      OLD=%%, 
+      NEW=%%, 
+      TG_ARGV=%%
+    )', 
+    TG_NAME, 
+    TG_OP, 
+    TG_TABLE_SCHEMA,
+    TG_TABLE_NAME, 
+    OLD::text, 
+    NEW::text, 
+    TG_ARGV::text;
+
+  -- Nothing to do yet
+  IF TG_OP = 'DELETE' THEN
+    RETURN OLD;
+  END IF;
+
+  -- Try to find definition
+  SELECT * FROM %1\$s.definitions 
+    WHERE
+        id = p_definition_id
+      AND
+        table_schema = TG_TABLE_SCHEMA
+      AND
+        table_name = TG_TABLE_NAME
+    INTO definition;
+  
+  IF definition IS NULL THEN
+    RETURN NEW;
+  END IF;
+
+  -- Get current rank
+  new_rank = %1\$s.get_record_value(NEW, definition.target_name);
+
+  -- Get old rank
+  old_rank = coalesce(%1\$s.get_record_value(OLD, definition.target_name), '');
+
+  -- Ensure valid format
+  IF old_rank NOT SIMILAR TO '[0-9]\|[a-z]*' THEN
+    old_rank = NULL;
+  END IF;
+  IF (
+      new_rank IS NOT NULL
+        AND
+      new_rank != '' 
+        AND
+      new_rank != 'first' 
+        AND
+      new_rank != 'last' 
+        AND
+      new_rank NOT SIMILAR TO '[0-9]\|[a-z]*'
+    ) THEN
+    new_rank = old_rank;
+  END IF;
+
+  -- Allow explicit null setting
+  IF new_rank IS NULL OR new_rank = '' THEN
+    NEW := NEW #= hstore(definition.target_name, NULL);
+
+    RETURN NEW;
+  END IF;
+  
+  -- Format group by clause
+  IF cardinality(definition.group_by) > 0 THEN
+    FOREACH column_name IN ARRAY definition.group_by::text[]
+    LOOP
+      conditions = array_append(
+        conditions, 
+        format(
+          '%%I = %%L', 
+          column_name, 
+          %1\$s.get_record_value(NEW, column_name)
+        )
+      );
+    END LOOP;
+  END IF;
+
+  -- Determine rank
+  IF new_rank != coalesce(old_rank, '') THEN
+    next_rank = %1\$s.determine_rank(
+      definition.table_schema, 
+      definition.table_name, 
+      definition.target_name, 
+      conditions, 
+      definition.bucket,
+      new_rank,
+      NEW.id::text
+    );
+  ELSE
+    next_rank = new_rank;
+  END IF;
+
+  -- Update rank in record
+  NEW := NEW #= hstore(definition.target_name, next_rank);
+
+  RETURN NEW;
+END;
+PLPGSQL
+          ,
+          Podium::$schema
+        ),
+        language: 'PLPGSQL'
+      );
+  }
+
+  protected function createTriggers() {
+      DB::statement(
+        sprintf(
+          <<<PLPGSQL
+CREATE OR REPLACE TRIGGER "100_prepare_before"
+  BEFORE INSERT OR UPDATE OR DELETE ON %1\$s.definitions
+  FOR EACH ROW 
+  EXECUTE FUNCTION %1\$s.definitions__before();
+PLPGSQL
+          ,
+          Podium::$schema
+        )
+      );
+
+      DB::statement(
+        sprintf(
+          <<<PLPGSQL
+  CREATE OR REPLACE TRIGGER "100_create_artifacts_after"
+    AFTER INSERT OR UPDATE OR DELETE ON %1\$s.definitions
+    FOR EACH ROW 
+    EXECUTE FUNCTION %1\$s.definitions__after();
+PLPGSQL
+          ,
+          Podium::$schema
+        )
+      );
+  }
+};
