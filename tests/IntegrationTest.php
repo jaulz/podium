@@ -30,7 +30,8 @@ test('increments order', function () {
     $previousPost = null;
     for ($index = 0; $index < 100; $index++) {
         $post = DB::table('posts')->insertReturning([
-            'title' => 'test'
+            'title' => 'test',
+            'order' => 'last',
         ])->first();
 
         if ($previousPost) {
@@ -54,7 +55,8 @@ test('decrements order', function () {
     $previousPost = null;
     for ($index = 0; $index < 100; $index++) {
         $post = DB::table('posts')->insertReturning([
-            'title' => 'test'
+            'title' => 'test',
+            'order' => 'first',
         ])->first();
 
         if ($previousPost) {
@@ -76,10 +78,12 @@ test('insert specifically', function () {
     });
 
     $firstPost = DB::table('posts')->insertReturning([
-        'title' => '1'
+        'title' => '1',
+        'order' => 'last',
     ])->first();
     $secondPost = DB::table('posts')->insertReturning([
-        'title' => '2'
+        'title' => '2',
+        'order' => 'last',
     ])->first();
     expect(DB::table('posts')->orderBy('order', 'ASC')->pluck('title')->toArray())->toEqual(['1', '2']);
 
@@ -125,10 +129,12 @@ test('respects groups', function () {
     $firstPost = DB::table('posts')->insertReturning([
         'title' => '1',
         'category_id' => 1,
+        'order' => 'last',
     ])->first();
     $secondPost = DB::table('posts')->insertReturning([
         'title' => '2',
         'category_id' => 2,
+        'order' => 'last',
     ])->first();
     expect($firstPost->order)->toEqual('0|n');
     expect($firstPost->order)->toEqual($secondPost->order);
@@ -155,7 +161,8 @@ test('keeps order after changing buckets', function () {
     $count = 100;
     for ($index = 0; $index < $count; $index++) {
         DB::table('posts')->insertReturning([
-            'title' => $index
+            'title' => $index,
+            'order' => 'last',
         ]);
         $order[] = strval($index);
     }
@@ -168,5 +175,27 @@ test('keeps order after changing buckets', function () {
     expect(DB::table('posts')->count())->toEqual(DB::table('posts')->where(
         'order', 'LIKE', '1|%' 
     )->count());
+    expect(DB::table('posts')->orderBy('order', 'ASC')->pluck('title')->toArray())->toEqual($order);
+});
+
+test('orders an existant table', function () {
+    Schema::create('posts', function (Blueprint $table) {
+        $table->id();
+        $table->text('title');
+    });
+
+    $order = [];
+    $count = 100;
+    for ($index = 0; $index < $count; $index++) {
+        DB::table('posts')->insertReturning([
+            'title' => $index,
+        ]);
+        $order[] = strval($index);
+    }
+
+    Schema::table('posts', function (Blueprint $table) {
+        $table->podium('order');
+    });
+
     expect(DB::table('posts')->orderBy('order', 'ASC')->pluck('title')->toArray())->toEqual($order);
 });

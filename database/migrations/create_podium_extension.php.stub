@@ -545,11 +545,10 @@ BEGIN
     -- Create column
     -- Note: the C collation is required to ensure the same ordering here and via SELECTs
     EXECUTE format(
-      'ALTER TABLE %%I.%%I ADD COLUMN IF NOT EXISTS %%I character varying(255) DEFAULT %%L COLLATE "C"', 
+      'ALTER TABLE %%I.%%I ADD COLUMN IF NOT EXISTS %%I character varying(255) COLLATE "C"', 
       NEW.table_schema,
       NEW.table_name,
-      NEW.target_name,
-      NEW.default_rank
+      NEW.target_name
     );
 
     -- Create trigger

@@ -20,6 +20,7 @@ trait IsOrderableTrait
    */
   public function initializeIsOrderableTrait()
   {
+    $this->order = 'last';
   }
 
   /**
@@ -30,10 +31,11 @@ trait IsOrderableTrait
    * @param  string  $direction
    * @return void
    */
-  public function scopeOrdered(Builder $query,
-  string $column = 'order',
-  string $direction = 'asc')
-  {
-    return $query->orderBy($column, $direction);
+  public function scopeOrdered(
+    Builder $query,
+    string $column = 'order',
+    string $direction = 'asc'
+  ) {
+    $query->orderBy($column, $direction);
   }
 }
