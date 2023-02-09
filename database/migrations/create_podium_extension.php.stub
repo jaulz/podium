@@ -4,7 +4,7 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Support\Facades\DB;
 use Tpetry\PostgresqlEnhanced\Schema\Blueprint;
 use Tpetry\PostgresqlEnhanced\Support\Facades\Schema;
-use Jaulz\Podium\Podium;
+use Jaulz\Podium\Facades\Podium;
 
 return new class extends Migration {
   /**
@@ -15,7 +15,7 @@ return new class extends Migration {
   public function up()
   {
     DB::transaction(function () {
-      DB::statement('CREATE SCHEMA IF NOT EXISTS ' . Podium::$schema);
+      DB::statement('CREATE SCHEMA IF NOT EXISTS ' . Podium::getSchema());
 
       // Create artifacts 
       $this->createTypes();
@@ -34,16 +34,16 @@ return new class extends Migration {
    */
   public function down()
   {
-    DB::statement('DROP SCHEMA IF EXISTS ' . Podium::$schema . ' CASCADE;');
+    DB::statement('DROP SCHEMA IF EXISTS ' . Podium::getSchema() . ' CASCADE;');
   }
 
   protected function createTypes() {
-      Schema::createDomain(Podium::$schema . '.column_names', 'text[]');
+      Schema::createDomain(Podium::getSchema() . '.column_names', 'text[]');
   }
 
   protected function createUtilityFunctions() {
       Schema::createFunctionOrReplace(
-        name: Podium::$schema . '.get_record_value',
+        name: Podium::getSchema() . '.get_record_value',
         parameters: [
           'p_element' => 'anyelement',
           'p_key' => 'text',
@@ -60,7 +60,7 @@ PLPGSQL
       );
 
       Schema::createFunctionOrReplace(
-        name: Podium::$schema . '.array_reverse',
+        name: Podium::getSchema() . '.array_reverse',
         parameters: [
           'p_array' => 'anyarray',
         ],
@@ -81,7 +81,7 @@ SQL
       );
 
       Schema::createFunctionOrReplace(
-        name: Podium::$schema . '.get_primary_key_name',
+        name: Podium::getSchema() . '.get_primary_key_name',
         parameters: [
           'p_table_schema' => 'text',
           'p_table_name' => 'text',
@@ -127,7 +127,7 @@ PLPGSQL
 
   protected function createFunctions() {
       Schema::createFunctionOrReplace(
-        name: Podium::$schema . '.lexo_rank',
+        name: Podium::getSchema() . '.lexo_rank',
         parameters: [
           'p_previous' => 'TEXT DEFAULT NULL',
           'p_next' => 'TEXT DEFAULT NULL',
@@ -266,7 +266,7 @@ PLPGSQL
       );
 
       Schema::createFunctionOrReplace(
-        name: Podium::$schema . '.determine_rank',
+        name: Podium::getSchema() . '.determine_rank',
         parameters: [
           'p_table_schema' => 'text',
           'p_table_name' => 'text',
@@ -386,13 +386,13 @@ PLPGSQL
   END;
 PLPGSQL
           ,
-          Podium::$schema
+          Podium::getSchema()
         ),
         language: 'PLPGSQL'
       );
 
       Schema::createFunctionOrReplace(
-        name: Podium::$schema . '.create',
+        name: Podium::getSchema() . '.create',
         parameters: [
           'p_table_schema' => 'text',
           'p_table_name' => 'text',
@@ -411,13 +411,13 @@ PLPGSQL
   END;
 PLPGSQL
           ,
-          Podium::$schema
+          Podium::getSchema()
         ),
         language: 'PLPGSQL'
       );
 
       Schema::createFunctionOrReplace(
-        name: Podium::$schema . '.rebalance',
+        name: Podium::getSchema() . '.rebalance',
         parameters: [
           'p_table_schema' => 'text',
           'p_table_name' => 'text',
@@ -440,14 +440,14 @@ PLPGSQL
   END;
 PLPGSQL
           ,
-          Podium::$schema
+          Podium::getSchema()
         ),
         language: 'PLPGSQL'
       );
   }
 
   protected function createTables() {
-      Schema::create(Podium::$schema . '.definitions', function (
+      Schema::create(Podium::getSchema() . '.definitions', function (
         Blueprint $table
       ) {
         $table->id()->generatedAs();
@@ -455,7 +455,7 @@ PLPGSQL
         $table->text('table_schema');
         $table->text('table_name');
         $table->text('target_name')->default('order');
-        $table->domain('group_by', Podium::$schema . '.column_names')->default(DB::raw(sprintf("'{}'::%1\$s.column_names", Podium::$schema)));
+        $table->domain('group_by', Podium::getSchema() . '.column_names')->default(DB::raw(sprintf("'{}'::%1\$s.column_names", Podium::getSchema())));
         $table->text('default_rank')->default('last');
         $table->integer('bucket')->default(0);
 
@@ -465,7 +465,7 @@ PLPGSQL
 
   protected function createTriggerFunctions() {
       Schema::createFunctionOrReplace(
-        name: Podium::$schema . '.definitions__before',
+        name: Podium::getSchema() . '.definitions__before',
         parameters: [],
         return: 'trigger',
         body: sprintf(
@@ -484,13 +484,13 @@ PLPGSQL
   END;
 PLPGSQL
           ,
-          Podium::$schema
+          Podium::getSchema()
         ),
         language: 'PLPGSQL'
       );
 
       Schema::createFunctionOrReplace(
-        name: Podium::$schema . '.definitions__after',
+        name: Podium::getSchema() . '.definitions__after',
         parameters: [],
         return: 'trigger',
         body: sprintf(
@@ -618,13 +618,13 @@ BEGIN
 END;
 PLPGSQL
           ,
-          Podium::$schema
+          Podium::getSchema()
         ),
         language: 'PLPGSQL'
       );
 
       Schema::createFunctionOrReplace(
-        name: Podium::$schema . '.podium__before',
+        name: Podium::getSchema() . '.podium__before',
         parameters: [],
         return: 'trigger',
         body: sprintf(
@@ -750,7 +750,7 @@ BEGIN
 END;
 PLPGSQL
           ,
-          Podium::$schema
+          Podium::getSchema()
         ),
         language: 'PLPGSQL'
       );
@@ -766,7 +766,7 @@ CREATE OR REPLACE TRIGGER "100_prepare_before"
   EXECUTE FUNCTION %1\$s.definitions__before();
 PLPGSQL
           ,
-          Podium::$schema
+          Podium::getSchema()
         )
       );
 
@@ -779,7 +779,7 @@ PLPGSQL
     EXECUTE FUNCTION %1\$s.definitions__after();
 PLPGSQL
           ,
-          Podium::$schema
+          Podium::getSchema()
         )
       );
   }

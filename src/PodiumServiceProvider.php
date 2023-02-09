@@ -5,6 +5,7 @@ namespace Jaulz\Podium;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Database\Schema\Grammars\PostgresGrammar;
 use Illuminate\Support\Fluent;
+use Jaulz\Podium\Facades\Podium;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
 use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\Commands\InstallCommand;
@@ -75,7 +76,7 @@ class PodiumServiceProvider extends PackageServiceProvider
     SELECT %s.create(%s, %s, %s, (SELECT ARRAY(SELECT jsonb_array_elements_text(%s::jsonb))), %s);
   SQL
             ,
-            Podium::$schema,
+            Podium::getSchema(),
             $this->quoteString($schema),
             $this->quoteString($prefix . $tableName),
             $this->quoteString($targetName),

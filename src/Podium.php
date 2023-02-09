@@ -6,7 +6,9 @@ use Illuminate\Support\Facades\DB;
 
 class Podium
 {
-  public static string $schema = 'podium';
+  public function getSchema() {
+    return 'podium';
+  }
 
   public function rebalance(string $tableSchema, string $tableName, string $targetName, int $bucket) {
     DB::statement(
@@ -15,7 +17,7 @@ class Podium
 SELECT podium.rebalance(:tableSchema, :tableName, :targetName, :bucket);
 SQL
         ,
-        Podium::$schema
+        $this->getSchema()
       ), compact('tableSchema', 'tableName', 'targetName', 'bucket')
     );
   }
