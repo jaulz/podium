@@ -51,7 +51,7 @@ class PodiumServiceProvider extends PackageServiceProvider
         /** @var \Illuminate\Database\Schema\Blueprint $this */
         $prefix = $this->prefix;
         $tableName = $this->table;
-        $schema = $schema ?? config('podium.schema') ?? 'public';
+        $schema = $schema ?? config('podium.table_schema') ?? 'public';
   
         $command = $this->addCommand(
           'podium',
